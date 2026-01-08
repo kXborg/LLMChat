@@ -52,9 +52,24 @@
             min-height: 120px;
         }
 
-        .sidebar h3 { margin-top: 0; }
-        .feature-list { list-style: none; padding: 0; margin: 8px 0 0 0; }
-        .feature-list li { margin: 8px 0; padding: 8px; background: #f8f9fb; border-radius: 6px; border: 1px solid #eee; font-size: 13px; }
+        .sidebar h3 {
+            margin-top: 0;
+        }
+
+        .feature-list {
+            list-style: none;
+            padding: 0;
+            margin: 8px 0 0 0;
+        }
+
+        .feature-list li {
+            margin: 8px 0;
+            padding: 8px;
+            background: #f8f9fb;
+            border-radius: 6px;
+            border: 1px solid #eee;
+            font-size: 13px;
+        }
 
         /* Header row - responsive */
         .header-row {
@@ -275,7 +290,10 @@
             border-radius: 6px;
             cursor: pointer;
         }
-        .code-copy-btn:hover { background: #e0e0e0; }
+
+        .code-copy-btn:hover {
+            background: #e0e0e0;
+        }
 
         /* Input row - responsive */
         .input-row {
@@ -449,8 +467,9 @@
         <div class="container">
             <div class="header-row">
                 <h2>Chat with Your Model</h2>
-                <a href="https://opencv.org/university/courses/?utm_source=opcv&utm_medium=menu" target="_blank" rel="noopener noreferrer" title="OpenCV University Courses">
-                    <img src="https://learnopencv.com/wp-content/uploads/2025/12/OpenCV_logo_no_text_.webp" alt="OpenCV" width="48" height="48" style="display:block;" />
+                <a href="https://opencv.org/university/courses/?utm_source=opcv&utm_medium=menu" target="_blank"
+                    rel="noopener noreferrer" title="OpenCV University Courses">
+                    <img src="/static/opencv_logo.png" alt="OpenCV" width="48" height="48" style="display:block;" />
                 </a>
             </div>
             <div class="controls-row">
@@ -474,9 +493,13 @@
                 <input id="inputText" placeholder="Type your message..." />
                 <button id="attachBtn" title="Attach files (1 image only)">
                     <!-- paperclip icon -->
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                        <path d="M16.5 6.5L7.5 15.5C6.12 16.88 6.12 19.12 7.5 20.5C8.88 21.88 11.12 21.88 12.5 20.5L21 12" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M18 9L10 17" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
+                        aria-hidden="true">
+                        <path
+                            d="M16.5 6.5L7.5 15.5C6.12 16.88 6.12 19.12 7.5 20.5C8.88 21.88 11.12 21.88 12.5 20.5L21 12"
+                            stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M18 9L10 17" stroke="white" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
                     </svg>
                     <span class="attach-text">Attach</span>
                 </button>
@@ -484,7 +507,7 @@
             </div>
             <input id="fileInput" type="file" style="display:none" multiple accept=".txt,.md,.markdown,.pdf,image/*" />
             <div id="fileList"></div>
-            
+
             <!-- Toggles row below input -->
             <div class="toggles-row">
                 <div class="toggle-item">
@@ -492,7 +515,8 @@
                     <label for="visionToggle">Force Vision</label>
                 </div>
                 <div class="toggle-item">
-                    <input type="checkbox" id="webSearchToggle" title="Enable web search to augment responses with real-time information" />
+                    <input type="checkbox" id="webSearchToggle"
+                        title="Enable web search to augment responses with real-time information" />
                     <label for="webSearchToggle">🔍 Web Search</label>
                 </div>
                 <div class="toggle-item">
@@ -514,7 +538,8 @@
             </div>
 
             <h3>Upcoming features</h3>
-            <p style="margin:6px 0 8px 0; color:#555; font-size:13px;">Planned additions to the app - roadmap items and prototypes.</p>
+            <p style="margin:6px 0 8px 0; color:#555; font-size:13px;">Planned additions to the app - roadmap items and
+                prototypes.</p>
             <ul class="feature-list">
                 <li><strong>1.</strong> ✅Large media handling & fallback strategies (avoid context limit issue)</li>
                 <li><strong>2.</strong> ✅MCP (Model Context Protocol) integration</li>
@@ -522,8 +547,8 @@
                 <li><strong>4.</strong> ✅Vector DB Added</li>
                 <li><strong>5.</strong> Export chat (JSON / text / PDF)</li>
                 <li><strong>6.</strong> Show currently running device (GPU/CPU/Edge)</li>
-                <li><strong>7.</strong> On-device ML support (local inference)</li>
-                <li><strong>8.</strong>User management - login + history backed by a database</strong></li>
+                <li><strong>7.</strong> ✅On-device ML support (local inference)</li>
+                <li><strong>8.</strong> User management - login + history backed by a database</li>
                 <li><strong>9.</strong> Dynamic error handling for models that does not support system prompt</li>
             </ul>
         </aside>

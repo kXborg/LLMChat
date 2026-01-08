@@ -1,5 +1,5 @@
 // Network utilities: streaming, models, errors, throughput footer stripping
-(function(){
+(function () {
   function stripThroughputFooter(text) {
     try {
       const src = String(text || '');
@@ -40,6 +40,14 @@
         opt.textContent = m.id;
         modelSelect.appendChild(opt);
       }
+
+      // Add Local Model option
+      const localOpt = document.createElement('option');
+      localOpt.value = "Local: TinyLlama-1.1B-Chat";
+      localOpt.textContent = "💻 Local: TinyLlama-1.1B-Chat (Browser)";
+      modelSelect.appendChild(localOpt);
+      models.push({ id: "Local: TinyLlama-1.1B-Chat", vision: false });  // Add metadata for it
+
       const defId = data.default || null;
       currentModel = (defId && models.find(x => x.id === defId)?.id) || models[0]?.id || null;
       modelSelect.value = currentModel || '';
@@ -96,7 +104,7 @@
     stripThroughputFooter,
     safeExtractError,
     loadModels,
-    checkWebSearchStatus: async function() {
+    checkWebSearchStatus: async function () {
       try {
         const res = await fetch('/search/status');
         const data = await res.json();

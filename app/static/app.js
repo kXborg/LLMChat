@@ -1,5 +1,5 @@
 // App logic extracted from index.html
-(function(){
+(function () {
   const messagesDiv = document.getElementById("messages");
   const inputField = document.getElementById("inputText");
   const sendBtn = document.getElementById("sendBtn");
@@ -19,6 +19,22 @@
   let userId = "user-" + Math.random().toString(36).substring(2, 8);
   let models = [];
   let currentModel = null;
+
+  // Worker for local inference
+  const worker = new Worker("/static/worker.js", { type: "module" });
+  const LOCAL_MODEL_ID = "Local: TinyLlama-1.1B-Chat";
+  let isWorkerLoaded = false;
+
+  worker.onmessage = function (e) {
+    const { status, data, output } = e.data;
+    if (status === 'ready') {
+      isWorkerLoaded = true;
+      console.log("Local model ready");
+    } else if (status === 'error') {
+      console.error("Worker error:", data);
+    }
+  };
+
 
   let autoScroll = true;
   function updateAutoScroll() {
@@ -60,7 +76,7 @@
 
   async function sendMessage() {
     // Ensure models are loaded so currentModel is valid
-    try { await modelsReady; } catch(_) {}
+    try { await modelsReady; } catch (_) { }
     const text = inputField.value.trim();
     if (!text) return;
     if (!currentModel) {
@@ -71,6 +87,61 @@
 
     addMessage(text, "user");
     inputField.value = "";
+
+    // LOCAL INFERENCE PATH
+    if (currentModel === LOCAL_MODEL_ID) {
+      const bubble = createAssistantBubble("... (Loading model, expect delay on first run)");
+      let generatedText = "";
+      const startTime = performance.now();
+
+      // Setup listener for this specific generation
+      const onWorkerMessage = (e) => {
+        const { status, output, data, delta } = e.data;
+        if (status === 'progress') {
+          if (data.status === 'progress') {
+            // Show download percentage if loading
+            bubble.innerText = `Downloading: ${Math.round(data.progress || 0)}%`;
+          }
+        } else if (status === 'update') {
+          if (delta) {
+            generatedText += output;
+          } else {
+            generatedText = output;
+          }
+          const clean = generatedText.replace(/<\|.*?\|>/g, "").replace(/<\/s>/g, "");
+          renderMarkdownInto(bubble, clean);
+          if (window.Render && window.Render.updateStatsFromStream) {
+            window.Render.updateStatsFromStream(null, startTime, generatedText);
+          }
+        } else if (status === 'complete') {
+          const clean = generatedText.replace(/<\|.*?\|>/g, "").replace(/<\/s>/g, "");
+          renderMarkdownInto(bubble, clean);
+          if (window.Render && window.Render.updateStatsFromStream) {
+            window.Render.updateStatsFromStream(null, startTime, generatedText);
+          }
+          worker.removeEventListener('message', onWorkerMessage);
+        } else if (status === 'error') {
+          renderMarkdownInto(bubble, `Error: ${data}`);
+          worker.removeEventListener('message', onWorkerMessage);
+        }
+      };
+
+      worker.addEventListener('message', onWorkerMessage);
+
+      // Trigger generation
+      // TinyLlama Chat Format
+      const prompt = `<|system|>\nYou are a friendly assistant.\n</s>\n<|user|>\n${text}\n</s>\n<|assistant|>\n`;
+
+      if (!isWorkerLoaded) {
+        worker.postMessage({ type: 'load' });
+      }
+
+
+
+
+      worker.postMessage({ type: 'generate', data: { text: prompt, max_new_tokens: 2048 } });
+      return;
+    }
 
     try {
       await streamAssistantResponse(text);
@@ -102,16 +173,16 @@
     const files = Array.from(fileInput.files || []);
     const ok = Attach.validateSelectionForModel(files, models, currentModel, visionToggle.checked);
     if (!ok.ok) { fileInput.value = ""; fileList.textContent = ""; return; }
-    
+
     // Check for PDFs and offer to index for RAG
     const pdfFiles = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
     const otherFiles = files.filter(f => !f.name.toLowerCase().endsWith('.pdf'));
-    
+
     // Index PDFs for RAG automatically
     for (const pdf of pdfFiles) {
       await uploadRagDocument(pdf);
     }
-    
+
     // Show other files in the list
     if (otherFiles.length > 0) {
       const names = otherFiles.map(f => `• ${f.name}`);
@@ -143,7 +214,7 @@
 
   // Configure marked to highlight code blocks
   marked.setOptions({
-    highlight: function(code, lang) {
+    highlight: function (code, lang) {
       try {
         if (lang && window.hljs?.getLanguage(lang)) {
           return window.hljs.highlight(code, { language: lang }).value;
@@ -193,7 +264,7 @@
 
   // Start loading models immediately
   modelsReady = loadModels();
-  
+
   // Initialize web search status
   initWebSearch();
 
@@ -292,23 +363,23 @@
   }
 
   // ============== RAG Document Management ==============
-  
+
   async function loadRagDocuments() {
     try {
       const res = await fetch(`/rag/documents?user_id=${encodeURIComponent(userId)}`);
       const data = await res.json();
       const docs = data.documents || [];
-      
+
       // Update doc count badge
       if (ragDocCount) {
         ragDocCount.textContent = docs.length > 0 ? `(${docs.length} doc${docs.length > 1 ? 's' : ''} indexed)` : '';
       }
-      
+
       if (docs.length === 0) {
         ragDocList.innerHTML = '<em style="color:#888;">No documents indexed</em>';
         return;
       }
-      
+
       ragDocList.innerHTML = docs.map(doc => `
         <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 6px; margin:4px 0; background:#f8f9fb; border-radius:4px; border:1px solid #eee;">
           <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:160px;" title="${doc.filename}">📄 ${doc.filename}</span>
@@ -319,26 +390,26 @@
       console.error('Failed to load RAG documents:', e);
     }
   }
-  
+
   async function uploadRagDocument(file) {
     const formData = new FormData();
     formData.append('file', file);
-    
+
     // Show indexing status in file list
     fileList.textContent = `⏳ Indexing ${file.name}...`;
-    
+
     try {
       const res = await fetch(`/rag/upload?user_id=${encodeURIComponent(userId)}`, {
         method: 'POST',
         body: formData,
       });
-      
+
       if (!res.ok) {
         const err = await res.json();
         fileList.textContent = `❌ Failed: ${err.detail || 'Unknown error'}`;
         return false;
       }
-      
+
       const data = await res.json();
       console.log('Document indexed:', data);
       fileList.textContent = `✅ Indexed: ${file.name} (${data.chunk_count} chunks)`;
@@ -350,26 +421,26 @@
       return false;
     }
   }
-  
-  window.deleteRagDoc = async function(docId) {
+
+  window.deleteRagDoc = async function (docId) {
     if (!confirm('Delete this document from RAG index?')) return;
-    
+
     try {
       const res = await fetch(`/rag/documents/${docId}?user_id=${encodeURIComponent(userId)}`, {
         method: 'DELETE',
       });
-      
+
       if (!res.ok) {
         alert('Failed to delete document');
         return;
       }
-      
+
       await loadRagDocuments();
     } catch (e) {
       console.error('Delete failed:', e);
     }
   };
-  
+
   // Initialize RAG status and load documents
   async function initRag() {
     try {
@@ -391,7 +462,7 @@
       }
     }
   }
-  
+
   initRag();
   // ============== End RAG Document Management ==============
 })();
