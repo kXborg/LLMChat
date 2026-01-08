@@ -48,9 +48,16 @@
       modelSelect.appendChild(localOpt);
       models.push({ id: "Local: Xenova/TinyLlama-1.1B-Chat-v1.0", vision: false });
 
-      // NOTE: Qwen models removed - incompatible ONNX file structure
-      // NOTE: OpenELM-270M removed - produces only empty tokens
-      // NOTE: LFM2.5 removed - "Unsupported model type: lfm2" in transformers.js
+      // Qwen models removed - incompatible ONNX file structure
+      // OpenELM-270M removed - produces only empty tokens
+      // LFM2.5 removed - "Unsupported model type: lfm2" in transformers.js
+
+      // WebGPU-accelerated model (requires Chrome/Edge with WebGPU support)
+      const localOptGPU = document.createElement('option');
+      localOptGPU.value = "Local: onnx-community/Llama-3.2-1B-Instruct-ONNX";
+      localOptGPU.textContent = "🚀 Local: Llama-3.2-1B (WebGPU)";
+      modelSelect.appendChild(localOptGPU);
+      models.push({ id: "Local: onnx-community/Llama-3.2-1B-Instruct-ONNX", vision: false });
 
       const localOpt3 = document.createElement('option');
       localOpt3.value = "Local: Xenova/Phi-3-mini-4k-instruct";

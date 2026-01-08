@@ -91,6 +91,13 @@
     } else if (modelId.includes("LFM2.5") || modelId.includes("LiquidAI")) {
       // LiquidAI LFM uses ChatML-like format
       return imStart + "system\nYou are a helpful assistant." + imEnd + "\n" + imStart + "user\n" + userText + imEnd + "\n" + imStart + "assistant\n";
+    } else if (modelId.includes("Llama-3") || modelId.includes("llama-3")) {
+      // Llama 3.x uses ChatML-like format with special tokens
+      var bosToken = "<|begin_of_text|>";
+      var headerStart = "<|start_header_id|>";
+      var headerEnd = "<|end_header_id|>";
+      var eot = "<|eot_id|>";
+      return bosToken + headerStart + "system" + headerEnd + "\n\nYou are a helpful assistant." + eot + headerStart + "user" + headerEnd + "\n\n" + userText + eot + headerStart + "assistant" + headerEnd + "\n\n";
     } else {
       return userTag + "\n" + userText + "\n" + asstTag + "\n";
     }
