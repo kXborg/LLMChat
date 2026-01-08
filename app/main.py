@@ -3,17 +3,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import Dict, List, cast, Any
+from typing import List, Optional
 from pathlib import Path
-import os, requests
-import re
-import io
-import uuid
+import os, requests, re, io, uuid
 from PIL import Image
 from openai import OpenAI, BadRequestError, NotFoundError
 from openai.types.chat import ChatCompletionMessageParam
 from fastapi import UploadFile, File, HTTPException
-from typing import Optional, cast
+# from typing import Optional, cast  <-- removed
+
 from tavily import TavilyClient
 from dotenv import load_dotenv
 
@@ -78,7 +76,6 @@ client = OpenAI(
 tavily_api_key = os.getenv("TAVILY_API_KEY", "")
 tavily_client = TavilyClient(api_key=tavily_api_key) if tavily_api_key else None
 
-# ============== RAG Configuration ==============
 # Embedding model for RAG
 RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "500"))  # characters per chunk
@@ -115,11 +112,10 @@ def init_qdrant_collection():
 init_qdrant_collection()
 
 # Store document metadata (in-memory)
-document_metadata: Dict[str, Dict[str, Any]] = {}  # doc_id -> {filename, user_id, chunk_count, ...}
-# ============== End RAG Configuration ==============
+document_metadata = {} 
 
-user_histories: Dict[str, List[ChatCompletionMessageParam]] = {}
-vision_capability_overrides: Dict[str, bool] = {}  # Store user overrides for vision capability
+user_histories = {}
+vision_capability_overrides = {}  # Store user overrides for vision capability
 SYSTEM_PROMPT = "You are a helpful assistant."
 
 # Chat behavior knobs (override via env vars if needed)
@@ -140,7 +136,7 @@ IMAGE_SIZE_THRESHOLD = int(os.getenv("IMAGE_SIZE_THRESHOLD", str(500 * 1024)))  
 IMAGE_MAX_SIZE_THRESHOLD = int(os.getenv("IMAGE_MAX_SIZE_THRESHOLD", str(1 * 1024 * 1024)))  # 1 MB
 IMAGE_MAX_DIMENSION = int(os.getenv("IMAGE_MAX_DIMENSION", "2048"))  # Max width or height
 IMAGE_QUALITY = int(os.getenv("IMAGE_QUALITY", "85"))  # JPEG/WebP quality (1-100)
-VISION_PROBE_CACHE: dict[str, bool] = {}
+VISION_PROBE_CACHE = {}
 
 
 class ChatRequest(BaseModel):
@@ -169,9 +165,7 @@ class Attachment(BaseModel):
     text: Optional[str] = None
 
 
-# ============== RAG Helper Functions ==============
-
-def extract_text_from_pdf(file_path: Path) -> str:
+def extract_text_from_pdf(file_path):
     """Extract text from a PDF file using PyMuPDF."""
     try:
         doc = fitz.open(str(file_path))
@@ -185,7 +179,7 @@ def extract_text_from_pdf(file_path: Path) -> str:
         return ""
 
 
-def chunk_text(text: str, chunk_size: int = RAG_CHUNK_SIZE, overlap: int = RAG_CHUNK_OVERLAP) -> List[str]:
+def chunk_text(text, chunk_size = RAG_CHUNK_SIZE, overlap = RAG_CHUNK_OVERLAP):
     """Split text into overlapping chunks."""
     if not text:
         return []
@@ -218,7 +212,7 @@ def chunk_text(text: str, chunk_size: int = RAG_CHUNK_SIZE, overlap: int = RAG_C
     return [c for c in chunks if c]  # Filter empty chunks
 
 
-def index_document(user_id: str, doc_id: str, filename: str, text: str) -> int:
+def index_document(user_id, doc_id, filename, text):
     """Index a document's text chunks into Qdrant."""
     chunks = chunk_text(text)
     if not chunks:
@@ -255,7 +249,7 @@ def index_document(user_id: str, doc_id: str, filename: str, text: str) -> int:
     return len(chunks)
 
 
-def search_documents(user_id: str, query: str, top_k: int = RAG_TOP_K) -> List[Dict[str, Any]]:
+def search_documents(user_id, query, top_k = RAG_TOP_K):
     """Search for relevant document chunks for a user's query."""
     model = get_embedding_model()
     query_embedding = model.encode([query], show_progress_bar=False)[0]
@@ -292,7 +286,7 @@ def search_documents(user_id: str, query: str, top_k: int = RAG_TOP_K) -> List[D
     ]
 
 
-def get_user_documents(user_id: str) -> List[Dict[str, Any]]:
+def get_user_documents(user_id):
     """Get list of documents indexed for a user."""
     return [
         {"doc_id": doc_id, **meta}
@@ -301,7 +295,7 @@ def get_user_documents(user_id: str) -> List[Dict[str, Any]]:
     ]
 
 
-def delete_document(user_id: str, doc_id: str) -> bool:
+def delete_document(user_id, doc_id):
     """Delete a document and its chunks from the index."""
     if doc_id not in document_metadata:
         return False
@@ -322,7 +316,7 @@ def delete_document(user_id: str, doc_id: str) -> bool:
     return True
 
 
-def perform_rag_search(user_id: str, query: str) -> str:
+def perform_rag_search(user_id, query):
     """Perform RAG search and return formatted context."""
     results = search_documents(user_id, query)
     
@@ -337,10 +331,8 @@ def perform_rag_search(user_id: str, query: str) -> str:
     return "\n".join(parts)
 
 
-# ============== End RAG Helper Functions ==============
 
-
-def probe_vision_capability(base_url: str, model_id: str, timeout: int = 5) -> bool:
+def probe_vision_capability(base_url, model_id, timeout = 5):
     if model_id in VISION_PROBE_CACHE:
         return VISION_PROBE_CACHE[model_id]
 
@@ -396,7 +388,7 @@ def probe_vision_capability(base_url: str, model_id: str, timeout: int = 5) -> b
         return False
 
 
-def get_vision_capability(user_id: str, model_id: str) -> bool:
+def get_vision_capability(user_id, model_id):
     """
     Get vision capability for a model, checking for user override first.
     If user has set an override for this model, use that.
@@ -409,7 +401,7 @@ def get_vision_capability(user_id: str, model_id: str) -> bool:
     return probe_vision_capability(openai_api_base, model_id)
 
 
-def get_vision_capability_from_request(user_id: str, model_id: str, vision_enabled_override: Optional[bool] = None) -> bool:
+def get_vision_capability_from_request(user_id, model_id, vision_enabled_override = None):
     """
     Get vision capability, checking user's request override first.
     Priority: request override > stored override > probed capability
@@ -419,12 +411,12 @@ def get_vision_capability_from_request(user_id: str, model_id: str, vision_enabl
     return get_vision_capability(user_id, model_id)
 
 
-def get_max_history_turns_for_model(model_id: str, user_id: str = "", vision_enabled_override: Optional[bool] = None) -> int:
+def get_max_history_turns_for_model(model_id, user_id = "", vision_enabled_override = None):
     vision_capable = get_vision_capability_from_request(user_id, model_id, vision_enabled_override)
     return MAX_HISTORY_TURNS_VISION if vision_capable else MAX_HISTORY_TURNS_TEXT
 
 
-def validate_attachments_for_model(model_id: str, attachments: Optional[List[Attachment]], user_id: str = "", vision_enabled_override: Optional[bool] = None):
+def validate_attachments_for_model(model_id, attachments, user_id = "", vision_enabled_override = None):
     if not attachments:
         return
     vision_capable = get_vision_capability_from_request(user_id, model_id, vision_enabled_override)
@@ -438,7 +430,7 @@ def validate_attachments_for_model(model_id: str, attachments: Optional[List[Att
 
 
 
-def _inject_attachments_into_message(base_text: str, attachments: Optional[List[Attachment]]) -> str:
+def _inject_attachments_into_message(base_text, attachments):
     if not attachments:
         return base_text
     lines: List[str] = []
@@ -452,11 +444,11 @@ def _inject_attachments_into_message(base_text: str, attachments: Optional[List[
     return base_text + "\n\n" + "\n\n".join(lines)
 
 
-def _build_user_content(user_message: str,
-                        attachments: Optional[List[Attachment]],
-                        model_id: str,
-                        user_id: str = "",
-                        vision_enabled_override: Optional[bool] = None) -> Any:
+def _build_user_content(user_message,
+                        attachments,
+                        model_id,
+                        user_id = "",
+                        vision_enabled_override = None):
     vision_capable = get_vision_capability_from_request(user_id, model_id, vision_enabled_override)
     if vision_capable:
         parts: List[Dict[str, Any]] = [{"type": "text", "text": user_message}]
@@ -512,16 +504,16 @@ def _build_user_content(user_message: str,
 
 
 def normalize_messages_for_vllm(
-    messages: List[ChatCompletionMessageParam],
-    model_id: str,
-    user_id: str = "",
-    vision_enabled_override: Optional[bool] = None
-) -> List[ChatCompletionMessageParam]:
+    messages,
+    model_id,
+    user_id = "",
+    vision_enabled_override = None
+):
     # If the target model is vision-capable, keep structured parts intact
     vision_capable = get_vision_capability_from_request(user_id, model_id, vision_enabled_override)
     if vision_capable:
         return messages
-    normalized: List[ChatCompletionMessageParam] = []
+    normalized = []
 
     for m in messages:
         content = m.get("content")
@@ -531,7 +523,7 @@ def normalize_messages_for_vllm(
             continue
 
         if isinstance(content, list):
-            parts: List[str] = []
+            parts = []
             for p in content:
                 if isinstance(p, dict):
                     if p.get("type") == "text":
@@ -542,24 +534,24 @@ def normalize_messages_for_vllm(
                             parts.append(f"[Image] {url}")
 
             normalized.append(
-                cast(ChatCompletionMessageParam, {
+                {
                     "role": m.get("role", "user"),
                     "content": "\n".join(parts),
-                })
+                }
             )
             continue
 
         normalized.append(
-            cast(ChatCompletionMessageParam, {
+            {
                 "role": m.get("role", "user"),
                 "content": str(content),
-            })
+            }
         )
 
     return normalized
 
 
-def perform_web_search(query: str, max_results: int = 5) -> str:
+def perform_web_search(query, max_results = 5):
     """
     Perform web search using Tavily and return formatted results.
     Returns empty string if search fails or is not configured.
@@ -599,14 +591,14 @@ def perform_web_search(query: str, max_results: int = 5) -> str:
         return ""
 
 
-def build_messages(user_id: str, user_message: str, attachments: Optional[List[Attachment]] = None, model_id: str = DEFAULT_MODEL, vision_enabled_override: Optional[bool] = None, web_search: bool = False, rag_enabled: bool = False) -> List[ChatCompletionMessageParam]:
+def build_messages(user_id, user_message, attachments = None, model_id = DEFAULT_MODEL, vision_enabled_override = None, web_search = False, rag_enabled = False):
     history = user_histories.get(user_id)
     if history is None:
-        history = cast(List[ChatCompletionMessageParam], [{"role": "system", "content": SYSTEM_PROMPT}])
+        history = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     # Keep system message (first) and only last N turns to reduce context growth
-    system_msg: List[ChatCompletionMessageParam] = []
-    tail: List[ChatCompletionMessageParam] = []
+    system_msg = []
+    tail = []
     if history and isinstance(history[0], dict) and history[0].get("role") == "system":
         system_msg = [history[0]]  # type: ignore[index]
         tail = history[1:]
@@ -617,7 +609,7 @@ def build_messages(user_id: str, user_message: str, attachments: Optional[List[A
     max_tail_msgs = get_max_history_turns_for_model(model_id) * 2
     trimmed_tail = tail[-max_tail_msgs:]
 
-    messages: List[ChatCompletionMessageParam] = [*system_msg, *trimmed_tail]
+    messages = [*system_msg, *trimmed_tail]
     
     # Augment user message with context from various sources
     augmented_message = user_message
@@ -640,12 +632,12 @@ def build_messages(user_id: str, user_message: str, attachments: Optional[List[A
         combined_context = "\n\n---\n".join(context_parts)
         augmented_message = f"{user_message}\n\n---\n{combined_context}\n---\n\nPlease use the above context to help answer my question. Cite sources when relevant."
     
-    user_content: Any = _build_user_content(augmented_message, attachments, model_id, user_id, vision_enabled_override)
+    user_content = _build_user_content(augmented_message, attachments, model_id, user_id, vision_enabled_override)
     messages.append({"role": "user", "content": user_content})
     return messages
 
 
-def _parse_allowed_tokens_from_error(msg: str) -> int | None:
+def _parse_allowed_tokens_from_error(msg):
     # Typical format:
     # "This model's maximum context length is 1024 tokens and your request has 899 input tokens (256 > 1024 - 899)."
     try:
@@ -740,9 +732,9 @@ async def chat(req: ChatRequest):
 
     # Prune stored history to respect max turns per selected model
     hist = user_histories.get(req.user_id)
-    if hist:
-        system_msg: List[ChatCompletionMessageParam] = []
-        tail: List[ChatCompletionMessageParam] = []
+        if hist:
+            system_msg = []
+            tail = []
         if isinstance(hist[0], dict) and hist[0].get("role") == "system":
             system_msg = [hist[0]]  # type: ignore[index]
             tail = hist[1:]
@@ -774,14 +766,14 @@ def chat_stream(req: ChatRequest):
     messages = normalize_messages_for_vllm(messages, model_name, req.user_id, req.vision_enabled)
 
     def token_generator():
-        buffer: List[str] = []
+        buffer = []
         max_tokens = DEFAULT_MAX_TOKENS
         effective_max_tokens = max(16, max_tokens - SUFFIX_MARGIN_TOKENS)
-        last_finish: str | None = None
+        last_finish = None
         import time
         start_t = time.perf_counter()
 
-        def do_stream(toks: int):
+        def do_stream(toks):
             return client.chat.completions.create(
                 model=model_name,
                 messages=messages,
@@ -858,8 +850,8 @@ def chat_stream(req: ChatRequest):
         # Prune stored history to respect max turns per selected model
         hist = user_histories.get(req.user_id)
         if hist:
-            system_msg: List[ChatCompletionMessageParam] = []
-            tail: List[ChatCompletionMessageParam] = []
+            system_msg = []
+            tail = []
             if isinstance(hist[0], dict) and hist[0].get("role") == "system":
                 system_msg = [hist[0]]  # type: ignore[index]
                 tail = hist[1:]
@@ -910,7 +902,6 @@ def search_status():
     }
 
 
-# ============== RAG Endpoints ==============
 
 class RAGUploadRequest(BaseModel):
     user_id: str
@@ -994,8 +985,6 @@ def rag_status():
     }
 
 
-# ============== End RAG Endpoints ==============
-
 
 class ResetRequest(BaseModel):
     user_id: str | None = None
@@ -1013,7 +1002,7 @@ def reset_chat(req: ResetRequest):
 
 @app.get("/models")
 def list_models():
-    items: List[Dict[str, Any]] = []
+    items = []
 
     try:
         data = client.models.list()
@@ -1074,7 +1063,7 @@ ALLOWED_EXTENSIONS = {
 }
 
 
-def compress_image(file_path: Path, mime_type: str) -> None:
+def compress_image(file_path, mime_type):
     """
     Compress image in-place if it exceeds size threshold.
     Resizes large images and re-encodes with quality tuning.
