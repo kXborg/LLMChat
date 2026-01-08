@@ -22,19 +22,19 @@
 
   // Worker for local inference
   const worker = new Worker("/static/worker.js", { type: "module" });
-  const LOCAL_MODEL_ID = "Local: TinyLlama-1.1B-Chat";
   let isWorkerLoaded = false;
+  let currentLocalModelId = null;
 
   worker.onmessage = function (e) {
-    const { status, data, output } = e.data;
+    const { status, data, model } = e.data;
     if (status === 'ready') {
       isWorkerLoaded = true;
-      console.log("Local model ready");
+      currentLocalModelId = model;
+      console.log("Local model ready:", model);
     } else if (status === 'error') {
       console.error("Worker error:", data);
     }
   };
-
 
   let autoScroll = true;
   function updateAutoScroll() {
@@ -48,40 +48,61 @@
     const bubble = document.createElement("div");
     bubble.classList.add("bubble", sender);
     bubble.textContent = text;
-
     const line = document.createElement("div");
     line.style.display = "flex";
     line.style.justifyContent = sender === "user" ? "flex-end" : "flex-start";
     line.appendChild(bubble);
-
     messagesDiv.appendChild(line);
     if (pinned) messagesDiv.scrollTop = messagesDiv.scrollHeight;
   }
 
-  function createAssistantBubble(initialText = "") {
+  function createAssistantBubble(initialText) {
     const pinned = autoScroll;
     const bubble = document.createElement("div");
     bubble.classList.add("bubble", "assistant");
-    bubble.innerText = initialText;
-
+    bubble.innerText = initialText || "";
     const line = document.createElement("div");
     line.style.display = "flex";
     line.style.justifyContent = "flex-start";
     line.appendChild(bubble);
-
     messagesDiv.appendChild(line);
     if (pinned) messagesDiv.scrollTop = messagesDiv.scrollHeight;
     return bubble;
   }
 
+  function buildPrompt(modelId, userText) {
+    var sysTag = "<" + "|system|" + ">";
+    var userTag = "<" + "|user|" + ">";
+    var asstTag = "<" + "|assistant|" + ">";
+    var endTag = "<" + "/s" + ">";
+    var imStart = "<" + "|im_start|" + ">";
+    var imEnd = "<" + "|im_end|" + ">";
+    var endTok = "<" + "|end|" + ">";
+
+    if (modelId.includes("TinyLlama")) {
+      return sysTag + "\nYou are a friendly assistant. Be concise unless asked to elaborate.\n" + endTag + "\n" + userTag + "\n" + userText + "\n" + endTag + "\n" + asstTag + "\n";
+    } else if (modelId.includes("Qwen")) {
+      return imStart + "system\nYou are a helpful assistant. Be concise unless asked to elaborate." + imEnd + "\n" + imStart + "user\n" + userText + imEnd + "\n" + imStart + "assistant\n";
+    } else if (modelId.includes("Phi-3")) {
+      return userTag + "\n" + userText + endTok + "\n" + asstTag + "\n";
+    } else if (modelId.includes("OpenELM")) {
+      // OpenELM uses simple instruction format
+      return "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n" + userText + "\n\n### Response:\n";
+    } else if (modelId.includes("LFM2.5") || modelId.includes("LiquidAI")) {
+      // LiquidAI LFM uses ChatML-like format
+      return imStart + "system\nYou are a helpful assistant." + imEnd + "\n" + imStart + "user\n" + userText + imEnd + "\n" + imStart + "assistant\n";
+    } else {
+      return userTag + "\n" + userText + "\n" + asstTag + "\n";
+    }
+  }
+
   async function sendMessage() {
-    // Ensure models are loaded so currentModel is valid
     try { await modelsReady; } catch (_) { }
     const text = inputField.value.trim();
     if (!text) return;
     if (!currentModel) {
       const bubble = createAssistantBubble("");
-      renderMarkdownInto(bubble, "Error: No model selected. Please choose a model from the dropdown.");
+      renderMarkdownInto(bubble, "Error: No model selected.");
       return;
     }
 
@@ -89,19 +110,28 @@
     inputField.value = "";
 
     // LOCAL INFERENCE PATH
-    if (currentModel === LOCAL_MODEL_ID) {
-      const bubble = createAssistantBubble("... (Loading model, expect delay on first run)");
+    if (currentModel.startsWith("Local:")) {
+      const actualModelId = currentModel.replace("Local: ", "").trim();
+      console.log("[App] Selected local model:", currentModel, "-> actualModelId:", actualModelId);
+      const bubble = createAssistantBubble("... (Loading model)");
       let generatedText = "";
       const startTime = performance.now();
+      const prompt = buildPrompt(actualModelId, text);
 
-      // Setup listener for this specific generation
       const onWorkerMessage = (e) => {
         const { status, output, data, delta } = e.data;
-        if (status === 'progress') {
-          if (data.status === 'progress') {
-            // Show download percentage if loading
-            bubble.innerText = `Downloading: ${Math.round(data.progress || 0)}%`;
+        if (status === 'loading') {
+          const modelName = data.model || actualModelId.split('/').pop();
+          bubble.innerHTML = '<span class="spinner"></span> Loading ' + modelName + '...';
+        } else if (status === 'progress') {
+          const pct = data.progress || 0;
+          const modelName = data.model || actualModelId.split('/').pop();
+          if (pct > 0) {
+            bubble.innerHTML = '<span class="spinner"></span> Downloading ' + modelName + ': ' + Math.round(pct) + '%';
           }
+        } else if (status === 'ready') {
+          bubble.innerText = "Generating...";
+          worker.postMessage({ type: 'generate', data: { text: prompt, max_new_tokens: 2048, model_id: actualModelId } });
         } else if (status === 'update') {
           if (delta) {
             generatedText += output;
@@ -121,28 +151,17 @@
           }
           worker.removeEventListener('message', onWorkerMessage);
         } else if (status === 'error') {
-          renderMarkdownInto(bubble, `Error: ${data}`);
+          renderMarkdownInto(bubble, "Error: " + data);
           worker.removeEventListener('message', onWorkerMessage);
         }
       };
 
       worker.addEventListener('message', onWorkerMessage);
-
-      // Trigger generation
-      // TinyLlama Chat Format
-      const prompt = `<|system|>\nYou are a friendly assistant.\n</s>\n<|user|>\n${text}\n</s>\n<|assistant|>\n`;
-
-      if (!isWorkerLoaded) {
-        worker.postMessage({ type: 'load' });
-      }
-
-
-
-
-      worker.postMessage({ type: 'generate', data: { text: prompt, max_new_tokens: 2048 } });
+      worker.postMessage({ type: 'load', data: { model: actualModelId } });
       return;
     }
 
+    // SERVER-SIDE INFERENCE PATH
     try {
       await streamAssistantResponse(text);
     } catch (e) {
@@ -156,7 +175,7 @@
       if (!response.ok) {
         const err = await safeExtractError(response);
         const bubble = createAssistantBubble("");
-        renderMarkdownInto(bubble, `Error: ${err}`);
+        renderMarkdownInto(bubble, "Error: " + err);
         return;
       }
       const data = await response.json();
@@ -173,22 +192,15 @@
     const files = Array.from(fileInput.files || []);
     const ok = Attach.validateSelectionForModel(files, models, currentModel, visionToggle.checked);
     if (!ok.ok) { fileInput.value = ""; fileList.textContent = ""; return; }
-
-    // Check for PDFs and offer to index for RAG
     const pdfFiles = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
     const otherFiles = files.filter(f => !f.name.toLowerCase().endsWith('.pdf'));
-
-    // Index PDFs for RAG automatically
     for (const pdf of pdfFiles) {
       await uploadRagDocument(pdf);
     }
-
-    // Show other files in the list
     if (otherFiles.length > 0) {
-      const names = otherFiles.map(f => `• ${f.name}`);
+      const names = otherFiles.map(f => "* " + f.name);
       fileList.textContent = names.join("\n");
     } else if (pdfFiles.length > 0) {
-      // Clear file input if only PDFs (they're indexed, not attached)
       fileInput.value = "";
     }
   };
@@ -210,17 +222,16 @@
     } catch (err) {
       console.error("Failed to reset chat", err);
     }
-  }
+  };
 
-  // Configure marked to highlight code blocks
   marked.setOptions({
     highlight: function (code, lang) {
       try {
-        if (lang && window.hljs?.getLanguage(lang)) {
+        if (lang && window.hljs && window.hljs.getLanguage(lang)) {
           return window.hljs.highlight(code, { language: lang }).value;
         }
-        return window.hljs?.highlightAuto(code).value || code;
-      } catch { return code; }
+        return window.hljs ? window.hljs.highlightAuto(code).value : code;
+      } catch (e) { return code; }
     }
   });
 
@@ -228,16 +239,14 @@
     Render.renderMarkdownInto(element, rawText);
   }
 
-  function attachCodeCopyButtons(container) { Render.renderMarkdownInto(container, container.innerHTML); }
-
   function showImagePreviews(attachments) { Render.showImagePreviews(attachments); }
 
   async function safeExtractError(response) {
     try {
       const data = await response.json();
-      return data.detail || data.error?.message || response.statusText;
+      return data.detail || (data.error && data.error.message) || response.statusText;
     } catch (_) {
-      try { return await response.text(); } catch { return response.statusText; }
+      try { return await response.text(); } catch (e) { return response.statusText; }
     }
   }
 
@@ -248,30 +257,23 @@
     currentModel = info.currentModel || currentModel;
   }
 
-  // Check web search availability and update toggle
   async function initWebSearch() {
     const available = await Net.checkWebSearchStatus();
     if (webSearchToggle) {
       webSearchToggle.disabled = !available;
       if (!available) {
-        webSearchToggle.title = "Web search is not available (API key not configured)";
+        webSearchToggle.title = "Web search is not available";
         webSearchToggle.parentElement.style.opacity = "0.5";
-      } else {
-        webSearchToggle.title = "Enable web search to augment responses with real-time information";
       }
     }
   }
 
-  // Start loading models immediately
   modelsReady = loadModels();
-
-  // Initialize web search status
   initWebSearch();
 
   function updateModelCaps() {
     const item = models.find(m => m.id === currentModel);
     if (!item) { modelCaps.textContent = ''; visionToggle.checked = false; return; }
-    // Set toggle based on model's probed vision capability
     visionToggle.checked = item.vision;
     modelCaps.textContent = item.vision ? 'Vision-capable' : 'Text-only';
   }
@@ -286,9 +288,7 @@
         fileList.textContent = '';
       }
     }
-  }
-
-  // models are already loading via modelsReady
+  };
 
   async function uploadSelectedFiles() { return Attach.uploadSelectedFiles(fileInput); }
 
@@ -305,7 +305,7 @@
     if (!response.ok || !response.body) {
       const err = await Net.safeExtractError(response);
       const eb = createAssistantBubble("");
-      renderMarkdownInto(eb, `Error: ${err}`);
+      renderMarkdownInto(eb, "Error: " + err);
       return;
     }
 
@@ -331,61 +331,25 @@
 
   function updateStatsFromResponse(data) { Render.updateStatsFromResponse(data); }
 
-  function updateStatsFromStream(footerText, startedAt, contentText) {
-    try {
-      const now = performance.now();
-      const durMs = Math.max(1, now - startedAt);
-      const m = footerText && footerText.match(/\[throughput\]\s+duration_ms=(\d+)\s+tokens_per_sec=([\d.]+)\s+approx_tokens=(\d+)/);
-      if (m) {
-        statsDiv.textContent = `throughput: ${parseFloat(m[2]).toFixed(2)} tok/s • completion: ${m[3]} • time: ${m[1]} ms`;
-        return;
-      }
-      const approxTokens = Math.max(1, (contentText || '').length / 4);
-      const tps = approxTokens / (durMs / 1000);
-      statsDiv.textContent = `throughput: ${tps.toFixed(2)} tok/s • time: ${Math.round(durMs)} ms`;
-    } catch {
-      statsDiv.textContent = '';
-    }
-  }
-
-  function stripThroughputFooter(text) {
-    try {
-      const src = String(text || '');
-      const reLine = /(^|\n)\s*\[throughput\][^\n]*\n?/g;
-      let lastFooter = null;
-      const matches = src.match(/\[throughput\][^\n]*/g);
-      if (matches && matches.length) lastFooter = matches[matches.length - 1].trim();
-      const clean = src.replace(reLine, (m, g1) => g1 ? g1 : '');
-      return { clean: clean.trim(), footer: lastFooter };
-    } catch {
-      return { clean: text, footer: null };
-    }
-  }
-
-  // ============== RAG Document Management ==============
-
+  // RAG Document Management
   async function loadRagDocuments() {
     try {
-      const res = await fetch(`/rag/documents?user_id=${encodeURIComponent(userId)}`);
+      const res = await fetch("/rag/documents?user_id=" + encodeURIComponent(userId));
       const data = await res.json();
       const docs = data.documents || [];
-
-      // Update doc count badge
       if (ragDocCount) {
-        ragDocCount.textContent = docs.length > 0 ? `(${docs.length} doc${docs.length > 1 ? 's' : ''} indexed)` : '';
+        ragDocCount.textContent = docs.length > 0 ? "(" + docs.length + " doc" + (docs.length > 1 ? "s" : "") + " indexed)" : "";
       }
-
       if (docs.length === 0) {
         ragDocList.innerHTML = '<em style="color:#888;">No documents indexed</em>';
         return;
       }
-
-      ragDocList.innerHTML = docs.map(doc => `
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 6px; margin:4px 0; background:#f8f9fb; border-radius:4px; border:1px solid #eee;">
-          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:160px;" title="${doc.filename}">📄 ${doc.filename}</span>
-          <button onclick="window.deleteRagDoc('${doc.doc_id}')" style="padding:2px 6px; font-size:10px; background:#dc3545; color:white; border:none; border-radius:3px; cursor:pointer;">✕</button>
-        </div>
-      `).join('');
+      ragDocList.innerHTML = docs.map(doc =>
+        '<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 6px; margin:4px 0; background:#f8f9fb; border-radius:4px; border:1px solid #eee;">' +
+        '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:160px;" title="' + doc.filename + '">📄 ' + doc.filename + '</span>' +
+        '<button onclick="window.deleteRagDoc(\'' + doc.doc_id + '\')" style="padding:2px 6px; font-size:10px; background:#dc3545; color:white; border:none; border-radius:3px; cursor:pointer;">X</button>' +
+        '</div>'
+      ).join('');
     } catch (e) {
       console.error('Failed to load RAG documents:', e);
     }
@@ -394,54 +358,44 @@
   async function uploadRagDocument(file) {
     const formData = new FormData();
     formData.append('file', file);
-
-    // Show indexing status in file list
-    fileList.textContent = `⏳ Indexing ${file.name}...`;
-
+    fileList.textContent = "Indexing " + file.name + "...";
     try {
-      const res = await fetch(`/rag/upload?user_id=${encodeURIComponent(userId)}`, {
+      const res = await fetch("/rag/upload?user_id=" + encodeURIComponent(userId), {
         method: 'POST',
         body: formData,
       });
-
       if (!res.ok) {
         const err = await res.json();
-        fileList.textContent = `❌ Failed: ${err.detail || 'Unknown error'}`;
+        fileList.textContent = "Failed: " + (err.detail || 'Unknown error');
         return false;
       }
-
       const data = await res.json();
-      console.log('Document indexed:', data);
-      fileList.textContent = `✅ Indexed: ${file.name} (${data.chunk_count} chunks)`;
+      fileList.textContent = "Indexed: " + file.name + " (" + data.chunk_count + " chunks)";
       await loadRagDocuments();
       return true;
     } catch (e) {
       console.error('Upload failed:', e);
-      fileList.textContent = '❌ Upload failed';
+      fileList.textContent = 'Upload failed';
       return false;
     }
   }
 
   window.deleteRagDoc = async function (docId) {
     if (!confirm('Delete this document from RAG index?')) return;
-
     try {
-      const res = await fetch(`/rag/documents/${docId}?user_id=${encodeURIComponent(userId)}`, {
+      const res = await fetch("/rag/documents/" + docId + "?user_id=" + encodeURIComponent(userId), {
         method: 'DELETE',
       });
-
       if (!res.ok) {
         alert('Failed to delete document');
         return;
       }
-
       await loadRagDocuments();
     } catch (e) {
       console.error('Delete failed:', e);
     }
   };
 
-  // Initialize RAG status and load documents
   async function initRag() {
     try {
       const res = await fetch('/rag/status');
@@ -464,5 +418,4 @@
   }
 
   initRag();
-  // ============== End RAG Document Management ==============
 })();

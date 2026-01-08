@@ -43,10 +43,20 @@
 
       // Add Local Model option
       const localOpt = document.createElement('option');
-      localOpt.value = "Local: TinyLlama-1.1B-Chat";
+      localOpt.value = "Local: Xenova/TinyLlama-1.1B-Chat-v1.0";
       localOpt.textContent = "💻 Local: TinyLlama-1.1B-Chat (Browser)";
       modelSelect.appendChild(localOpt);
-      models.push({ id: "Local: TinyLlama-1.1B-Chat", vision: false });  // Add metadata for it
+      models.push({ id: "Local: Xenova/TinyLlama-1.1B-Chat-v1.0", vision: false });
+
+      // NOTE: Qwen models removed - incompatible ONNX file structure
+      // NOTE: OpenELM-270M removed - produces only empty tokens
+      // NOTE: LFM2.5 removed - "Unsupported model type: lfm2" in transformers.js
+
+      const localOpt3 = document.createElement('option');
+      localOpt3.value = "Local: Xenova/Phi-3-mini-4k-instruct";
+      localOpt3.textContent = "💻 Local: Phi-3-mini-4k-instruct (Browser)";
+      modelSelect.appendChild(localOpt3);
+      models.push({ id: "Local: Xenova/Phi-3-mini-4k-instruct", vision: false });
 
       const defId = data.default || null;
       currentModel = (defId && models.find(x => x.id === defId)?.id) || models[0]?.id || null;
@@ -62,19 +72,7 @@
       visionToggle.checked = item.vision;
       modelCaps.textContent = item.vision ? 'Vision-capable' : 'Text-only';
     }
-    modelSelect.onchange = () => {
-      currentModel = modelSelect.value || null;
-      updateModelCaps();
-      const item = models.find(m => m.id === currentModel);
-      const fileInput = document.getElementById("fileInput");
-      const fileList = document.getElementById("fileList");
-      if (item && !item.vision && !visionToggle.checked) {
-        if (Array.from(fileInput.files || []).some(f => !(f.type || '').startsWith('text/'))) {
-          fileInput.value = '';
-          fileList.textContent = '';
-        }
-      }
-    };
+    // NOTE: modelSelect.onchange is handled by app.js to update currentModel
     // Handle vision toggle changes
     visionToggle.onchange = () => {
       const item = models.find(m => m.id === currentModel);

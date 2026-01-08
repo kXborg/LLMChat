@@ -459,6 +459,25 @@
             outline: 2px solid #007bff;
             outline-offset: 2px;
         }
+
+        /* Loading spinner for local model download */
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #ccc;
+            border-top-color: #007bff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
     </style>
 </head>
 
@@ -469,7 +488,8 @@
                 <h2>Chat with Your Model</h2>
                 <a href="https://opencv.org/university/courses/?utm_source=opcv&utm_medium=menu" target="_blank"
                     rel="noopener noreferrer" title="OpenCV University Courses">
-                    <img src="/static/opencv_logo.png" alt="OpenCV" width="48" height="48" style="display:block;" />
+                    <img src="/static/opencv-logo-no-text-1.svg" alt="OpenCV" width="48" height="48"
+                        style="display:block;" />
                 </a>
             </div>
             <div class="controls-row">
