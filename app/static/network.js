@@ -59,6 +59,18 @@
       modelSelect.appendChild(localOptGPU);
       models.push({ id: "Local: onnx-community/Llama-3.2-1B-Instruct-ONNX", vision: false });
 
+      const localOptSmol = document.createElement('option');
+      localOptSmol.value = "Local: HuggingFaceTB/SmolLM2-360M-Instruct";
+      localOptSmol.textContent = "🚀 Local: SmolLM2-360M (WebGPU)";
+      modelSelect.appendChild(localOptSmol);
+      models.push({ id: "Local: HuggingFaceTB/SmolLM2-360M-Instruct", vision: false });
+
+      const localOptGemma = document.createElement('option');
+      localOptGemma.value = "Local: onnx-community/gemma-3-1b-it-ONNX";
+      localOptGemma.textContent = "🚀 Local: Gemma-3-1b (WebGPU)";
+      modelSelect.appendChild(localOptGemma);
+      models.push({ id: "Local: onnx-community/gemma-3-1b-it-ONNX", vision: false });
+
       const localOpt3 = document.createElement('option');
       localOpt3.value = "Local: Xenova/Phi-3-mini-4k-instruct";
       localOpt3.textContent = "💻 Local: Phi-3-mini-4k-instruct (Browser)";

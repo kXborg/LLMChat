@@ -21,6 +21,8 @@ async function isWebGPUAvailable() {
 // Models that should use WebGPU (q4f16 quantized for GPU)
 const WEBGPU_MODELS = [
     'onnx-community/Llama-3.2-1B-Instruct-ONNX',
+    'HuggingFaceTB/SmolLM2-360M-Instruct',
+    'onnx-community/gemma-3-1b-it-ONNX',
 ];
 
 class PipelineSingleton {
@@ -88,6 +90,9 @@ class PipelineSingleton {
     }
 }
 
+
+let stopping = false;
+
 self.addEventListener('message', async (event) => {
     const { type, data } = event.data;
 
@@ -96,7 +101,11 @@ self.addEventListener('message', async (event) => {
             await load(data);
             break;
         case 'generate':
+            stopping = false;
             await generate(data);
+            break;
+        case 'interrupt':
+            stopping = true;
             break;
     }
 });
@@ -138,6 +147,9 @@ async function generate(data) {
             skip_prompt: true,
             skip_special_tokens: true,
             callback_function: (token) => {
+                if (stopping) {
+                    throw new Error("Generation interrupted");
+                }
                 console.log("[Worker] Streamer token:", token);
                 self.postMessage({
                     status: 'update',
@@ -161,6 +173,10 @@ async function generate(data) {
         });
 
     } catch (e) {
+        if (e.message === "Generation interrupted") {
+            self.postMessage({ status: 'complete', output: "" }); // Treat as complete but maybe empty additional text
+            return;
+        }
         console.error("[Worker] Generate error:", e);
         let errorMsg = "Unknown error";
         if (e && e.message) {
