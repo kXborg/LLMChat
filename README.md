@@ -1,4 +1,4 @@
-# simpleChatUI
+# LLM Chat
 
 ![LLM Chat](simple-chat-ui.png)
 
