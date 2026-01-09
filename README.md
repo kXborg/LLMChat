@@ -19,67 +19,19 @@ Terminal 1
 uvicorn app.main:app --host 0.0.0.0 --port 3000
 ```
 
+
 ## Tested Models on vLLM Server (RTX 3080 Ti, 12 GB)
-The following are the list of models we have successfully tried so far on `vllm==0.12.x` versions. The errors we faced and fixes are also logged within. 
+The following are the list of models we have successfully tried so far on `vllm==0.12.x` versions. The errors we faced and fixes are also logged within.
 
-### 1. Falcon3-7B-Instruct-GPTQ-Int4
-```bash
-vllm serve tiiuae/Falcon3-7B-Instruct-GPTQ-Int4 \
---port 8000 --max-model-len 4096 --gpu-memory-utilization 0.85
-```
-
-### 2. Ministral-3-8B-Instruct-2512-AWQ-4bit
-```bash
-vllm serve cyankiwi/Ministral-3-8B-Instruct-2512-AWQ-4bit --port 8000 --gpu-memory-utilization 0.85 --max-model-len 6144 --max-num-batched-tokens 1024
-```
-
-### 3. OpenGVLab/InternVL3-8B-AWQ
-```bash
-vllm serve OpenGVLab/InternVL3-8B-AWQ --max-model-len 4096 --gpu-memory-utilization 0.75 --max-num-batched-tokens 1024 --trust-remote-code --quantization awq
-```
-
-Note that this AWQ quantized model won't work unless `--quantization awq` flag is explicitly set.
-
-### 4. OpenGVLab/InternVL3-2B
-
-```bash
-vllm serve OpenGVLab/InternVL3-2B --max-model-len 4096 --gpu-memory-utilization 0.75 --max-num-batched-tokens 1024 --trust-remote-code
-```
-
-### 5. Nemotron Cascade 8B
-
-```bash
-vllm serve cyankiwi/Nemotron-Cascade-8B-AWQ-4bit --max-model-len 4096 --port 8000 --gpu-memory-utilization 0.85 --max-num-batched-tokens 1024 --trust-remote-code
-```
-
-### 6. Nemotron Orchestrator 8B
-
-```bash
- vllm serve cyankiwi/Nemotron-Orchestrator-8B-AWQ-4bit --served-model-name Nemotron-orchestrator  --max-model-len 4096  --gpu-memory-utilization 0.85   --max-num-batched-tokens 1024 --trust-remote-code  --port 8000
-```
-
-### 7. Qwen VL 2B Instruct
-```bash
-vllm serve Qwen/Qwen2-VL-2B-Instruct --max-model-len 4096 --gpu-memory-utilization 0.75 --max-num-batched-tokens 1024 --port 8000
-```
-
-### 8. Nvidia Cosmos Reason2 2B
-```bash
-vllm serve nvidia/Cosmos-Reason2-2B --max-model-len 8192 --max-num-batched-tokens 2048 --gpu-memory-utilization 0.8 --port 8000
-```
-
-### 9. H20VL Mississipi 2B
-Does not support system prompt, hence need to take care of this. (Not yet fixed)
-
-```bash
-vllm serve h2oai/h2ovl-mississippi-2b   --max-model-len 4096  --max-num-batched-tokens 2048 --gpu-memory-utilization 0.75
-```
-
-### 10. Gemma 3 4B Instriuct
-The original model is not loading due to OOM issue. Lowering model length to 1024 does not make sense for a Vision model. Hence using GPTQ quantized model from community. 
-
-Max concurrency observed 9 Nos.
-```bash
-vllm serve ISTA-DASLab/gemma-3-4b-it-GPTQ-4b-128g --max-model-len 4096 --max-num-batched-tokens 102
-4 --gpu-memory-utilization 0.8
-```
+| Model Name | Command | Remarks |
+|:----------|:----------|:----------|
+| Falcon3-7B-Instruct-GPTQ-Int4 | `vllm serve tiiuae/Falcon3-7B-Instruct-GPTQ-Int4 --max-model-len 4096 --gpu-memory-utilization 0.85` |  |
+| Ministral-3-8B-Instruct-2512-AWQ-4bit | `vllm serve cyankiwi/Ministral-3-8B-Instruct-2512-AWQ-4bit  --gpu-memory-utilization 0.85 --max-model-len 6144 --max-num-batched-tokens 1024` |  |
+| OpenGVLab/InternVL3-8B-AWQ | `vllm serve OpenGVLab/InternVL3-8B-AWQ --max-model-len 4096 --gpu-memory-utilization 0.75 --max-num-batched-tokens 1024 --trust-remote-code --quantization awq` | Note: AWQ quantized model won't work unless <code>--quantization awq</code> flag is set. |
+| OpenGVLab/InternVL3-2B | `vllm serve OpenGVLab/InternVL3-2B --max-model-len 4096 --gpu-memory-utilization 0.75 --max-num-batched-tokens 1024 --trust-remote-code` |  |
+| Nemotron Cascade 8B | `vllm serve cyankiwi/Nemotron-Cascade-8B-AWQ-4bit --max-model-len 4096  --gpu-memory-utilization 0.85 --max-num-batched-tokens 1024 --trust-remote-code` |  |
+| Nemotron Orchestrator 8B | `vllm serve cyankiwi/Nemotron-Orchestrator-8B-AWQ-4bit --served-model-name Nemotron-orchestrator --max-model-len 4096 --gpu-memory-utilization 0.85 --max-num-batched-tokens 1024 --trust-remote-code `|  |
+| Qwen VL 2B Instruct | `vllm serve Qwen/Qwen2-VL-2B-Instruct --max-model-len 4096 --gpu-memory-utilization 0.75 --max-num-batched-tokens 1024 ` |  |
+| Nvidia Cosmos Reason2 2B | `vllm serve nvidia/Cosmos-Reason2-2B --max-model-len 8192 --max-num-batched-tokens 2048 --gpu-memory-utilization 0.8 ` |  |
+| H20VL Mississipi 2B | `vllm serve h2oai/h2ovl-mississippi-2b --max-model-len 4096 --max-num-batched-tokens 2048 --gpu-memory-utilization 0.75` | Does not support system prompt, need to take care of this. (Not yet fixed) |
+| Gemma 3 4B Instruct | `vllm serve ISTA-DASLab/gemma-3-4b-it-GPTQ-4b-128g --max-model-len 4096 --max-num-batched-tokens 1024 --gpu-memory-utilization 0.8` | Original model OOM. Using GPTQ quantized model from community. Max concurrency observed: 9 |
