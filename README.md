@@ -1,5 +1,5 @@
 # LLM Chat
 
-![LLM Chat](simple-chat-ui.png)
+![LLM Chat](/tests/llmchat.png)
 
-A chat interface integrated with RAG, web search and more for LLMs and VLMs.
+A chatML interface integrated with RAG, Web search and more for LLMs and VLMs.
