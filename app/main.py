@@ -5,21 +5,40 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from pathlib import Path
-import os, requests, re, io, uuid
-from PIL import Image
+import os
 from openai import OpenAI, BadRequestError, NotFoundError
-from openai.types.chat import ChatCompletionMessageParam
 from fastapi import UploadFile, File, HTTPException
-# from typing import Optional, cast  <-- removed
 
 from tavily import TavilyClient
 from dotenv import load_dotenv
-
-# RAG imports
-import fitz  # PyMuPDF for PDF extraction
-from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+
+# Import utility modules
+from app.utils import (
+    # RAG utilities
+    init_qdrant_collection,
+    extract_text_from_pdf,
+    index_document,
+    search_documents,
+    get_user_documents,
+    delete_document,
+    perform_rag_search,
+    document_metadata,
+    # Vision utilities
+    probe_vision_capability,
+    get_vision_capability_from_request,
+    get_max_history_turns_for_model,
+    validate_attachments_for_model,
+    # Message utilities
+    build_messages,
+    normalize_messages_for_vllm,
+    # Search utilities
+    perform_web_search,
+    # Image utilities
+    compress_image,
+    # LLM utilities
+    parse_allowed_tokens_from_error,
+)
 
 # Load environment variables from .env file
 load_dotenv(Path(__file__).parent / ".env")
@@ -83,36 +102,11 @@ RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "100"))  # overlap betwee
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "5"))  # number of chunks to retrieve
 RAG_COLLECTION_NAME = "documents"
 
-# Initialize embedding model (lazy loading)
-_embedding_model = None
-
-def get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        print(f"Loading embedding model: {RAG_EMBEDDING_MODEL}...")
-        _embedding_model = SentenceTransformer(RAG_EMBEDDING_MODEL)
-        print("Embedding model loaded.")
-    return _embedding_model
-
 # Initialize Qdrant client (in-memory)
 qdrant_client = QdrantClient(":memory:")
 
 # Create collection on startup
-def init_qdrant_collection():
-    """Initialize Qdrant collection if it doesn't exist."""
-    collections = qdrant_client.get_collections().collections
-    if not any(c.name == RAG_COLLECTION_NAME for c in collections):
-        # all-MiniLM-L6-v2 produces 384-dimensional vectors
-        qdrant_client.create_collection(
-            collection_name=RAG_COLLECTION_NAME,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-        )
-        print(f"Created Qdrant collection: {RAG_COLLECTION_NAME}")
-
-init_qdrant_collection()
-
-# Store document metadata (in-memory)
-document_metadata = {} 
+init_qdrant_collection(qdrant_client, RAG_COLLECTION_NAME)
 
 user_histories = {}
 vision_capability_overrides = {}  # Store user overrides for vision capability
@@ -136,7 +130,6 @@ IMAGE_SIZE_THRESHOLD = int(os.getenv("IMAGE_SIZE_THRESHOLD", str(500 * 1024)))  
 IMAGE_MAX_SIZE_THRESHOLD = int(os.getenv("IMAGE_MAX_SIZE_THRESHOLD", str(1 * 1024 * 1024)))  # 1 MB
 IMAGE_MAX_DIMENSION = int(os.getenv("IMAGE_MAX_DIMENSION", "2048"))  # Max width or height
 IMAGE_QUALITY = int(os.getenv("IMAGE_QUALITY", "85"))  # JPEG/WebP quality (1-100)
-VISION_PROBE_CACHE = {}
 
 
 class ChatRequest(BaseModel):
@@ -165,492 +158,58 @@ class Attachment(BaseModel):
     text: Optional[str] = None
 
 
-def extract_text_from_pdf(file_path):
-    """Extract text from a PDF file using PyMuPDF."""
-    try:
-        doc = fitz.open(str(file_path))
-        text_parts = []
-        for page in doc:
-            text_parts.append(page.get_text())
-        doc.close()
-        return "\n".join(text_parts)
-    except Exception as e:
-        print(f"Error extracting text from PDF: {e}")
-        return ""
-
-
-def chunk_text(text, chunk_size = RAG_CHUNK_SIZE, overlap = RAG_CHUNK_OVERLAP):
-    """Split text into overlapping chunks."""
-    if not text:
-        return []
-    
-    chunks = []
-    start = 0
-    text_len = len(text)
-    
-    while start < text_len:
-        end = start + chunk_size
-        chunk = text[start:end]
-        
-        # Try to break at sentence or paragraph boundary
-        if end < text_len:
-            # Look for last period, newline, or space
-            for sep in ['\n\n', '\n', '. ', ' ']:
-                last_sep = chunk.rfind(sep)
-                if last_sep > chunk_size // 2:  # Only break if we're past halfway
-                    chunk = chunk[:last_sep + len(sep)]
-                    end = start + len(chunk)
-                    break
-        
-        chunks.append(chunk.strip())
-        start = end - overlap
-        
-        # Prevent infinite loop
-        if start >= text_len - overlap:
-            break
-    
-    return [c for c in chunks if c]  # Filter empty chunks
-
-
-def index_document(user_id, doc_id, filename, text):
-    """Index a document's text chunks into Qdrant."""
-    chunks = chunk_text(text)
-    if not chunks:
-        return 0
-    
-    model = get_embedding_model()
-    embeddings = model.encode(chunks, show_progress_bar=False)
-    
-    points = []
-    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-        point_id = str(uuid.uuid4())
-        points.append(PointStruct(
-            id=point_id,
-            vector=embedding.tolist(),
-            payload={
-                "user_id": user_id,
-                "doc_id": doc_id,
-                "filename": filename,
-                "chunk_index": i,
-                "text": chunk,
-            }
-        ))
-    
-    qdrant_client.upsert(collection_name=RAG_COLLECTION_NAME, points=points)
-    
-    # Store metadata
-    document_metadata[doc_id] = {
-        "filename": filename,
-        "user_id": user_id,
-        "chunk_count": len(chunks),
-        "text_length": len(text),
-    }
-    
-    return len(chunks)
-
-
-def search_documents(user_id, query, top_k = RAG_TOP_K):
-    """Search for relevant document chunks for a user's query."""
-    model = get_embedding_model()
-    query_embedding = model.encode([query], show_progress_bar=False)[0]
-    
-    # Use query_points for newer qdrant-client versions, fallback to search for older versions
-    try:
-        results = qdrant_client.query_points(
-            collection_name=RAG_COLLECTION_NAME,
-            query=query_embedding.tolist(),
-            query_filter=Filter(
-                must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
-            ),
-            limit=top_k,
-        ).points
-    except AttributeError:
-        # Fallback for older qdrant-client versions
-        results = qdrant_client.search(
-            collection_name=RAG_COLLECTION_NAME,
-            query_vector=query_embedding.tolist(),
-            query_filter=Filter(
-                must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))]
-            ),
-            limit=top_k,
-        )
-    
-    return [
-        {
-            "text": hit.payload.get("text", ""),
-            "filename": hit.payload.get("filename", ""),
-            "score": hit.score,
-            "chunk_index": hit.payload.get("chunk_index", 0),
-        }
-        for hit in results
-    ]
-
-
-def get_user_documents(user_id):
-    """Get list of documents indexed for a user."""
-    return [
-        {"doc_id": doc_id, **meta}
-        for doc_id, meta in document_metadata.items()
-        if meta.get("user_id") == user_id
-    ]
-
-
-def delete_document(user_id, doc_id):
-    """Delete a document and its chunks from the index."""
-    if doc_id not in document_metadata:
-        return False
-    
-    meta = document_metadata[doc_id]
-    if meta.get("user_id") != user_id:
-        return False
-    
-    # Delete points with matching doc_id
-    qdrant_client.delete(
-        collection_name=RAG_COLLECTION_NAME,
-        points_selector=Filter(
-            must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
-        ),
+# Wrapper functions to adapt utility functions to main.py's context
+def _get_vision_capability_from_request(user_id, model_id, vision_enabled_override=None):
+    """Wrapper to call vision utility with proper context."""
+    return get_vision_capability_from_request(
+        openai_api_base, user_id, model_id, vision_capability_overrides, vision_enabled_override
     )
-    
-    del document_metadata[doc_id]
-    return True
 
 
-def perform_rag_search(user_id, query):
-    """Perform RAG search and return formatted context."""
-    results = search_documents(user_id, query)
-    
-    if not results:
-        return ""
-    
-    parts = ["**[Document Context]**\n"]
-    for i, r in enumerate(results, 1):
-        score_pct = int(r["score"] * 100)
-        parts.append(f"\n**[{i}. {r['filename']} (relevance: {score_pct}%)]**\n{r['text']}\n")
-    
-    return "\n".join(parts)
+def _get_max_history_turns_for_model(model_id, user_id="", vision_enabled_override=None):
+    """Wrapper to call vision utility with proper context."""
+    return get_max_history_turns_for_model(
+        openai_api_base, model_id, MAX_HISTORY_TURNS_TEXT, MAX_HISTORY_TURNS_VISION,
+        vision_capability_overrides, user_id, vision_enabled_override
+    )
 
 
-
-def probe_vision_capability(base_url, model_id, timeout = 5):
-    if model_id in VISION_PROBE_CACHE:
-        return VISION_PROBE_CACHE[model_id]
-
-    payload = {
-        "model": model_id,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": "about:blank"},
-                    {"type": "text", "text": "ping"},
-                ],
-            }
-        ],
-        "max_tokens": 1,
-    }
-
-    # Normalize the base URL - strip trailing /v1 if present, then add it back
-    # This ensures consistency whether base_url ends with /v1 or not
-    normalized_base = base_url.rstrip("/")
-    if normalized_base.endswith("/v1"):
-        normalized_base = normalized_base[:-3]
-    
-    try:
-        r = requests.post(
-            f"{normalized_base}/v1/chat/completions",
-            json=payload,
-            headers={"ngrok-skip-browser-warning": "true"},
-            timeout=timeout,
-        )
-
-        if r.status_code == 200:
-            VISION_PROBE_CACHE[model_id] = True
-            return True
-
-        error_text = r.text.lower()
-
-        if any(k in error_text for k in [
-            "image",
-            "vision",
-            "multimodal",
-            "image_url",
-            "image token",
-        ]):
-            VISION_PROBE_CACHE[model_id] = True
-            return True
-
-        VISION_PROBE_CACHE[model_id] = False
-        return False
-
-    except requests.RequestException:
-        VISION_PROBE_CACHE[model_id] = False
-        return False
+def _validate_attachments_for_model(model_id, attachments, user_id="", vision_enabled_override=None):
+    """Wrapper to call vision utility with proper context."""
+    return validate_attachments_for_model(
+        openai_api_base, model_id, attachments, vision_capability_overrides,
+        user_id, vision_enabled_override
+    )
 
 
-def get_vision_capability(user_id, model_id):
-    """
-    Get vision capability for a model, checking for user override first.
-    If user has set an override for this model, use that.
-    Otherwise, use the probed capability.
-    """
-    override_key = f"{user_id}:{model_id}"
-    override = vision_capability_overrides.get(override_key)
-    if override is not None:
-        return override
-    return probe_vision_capability(openai_api_base, model_id)
+def _perform_rag_search(user_id, query):
+    """Wrapper to call RAG utility with proper context."""
+    return perform_rag_search(
+        qdrant_client, RAG_COLLECTION_NAME, RAG_EMBEDDING_MODEL, user_id, query, RAG_TOP_K
+    )
 
 
-def get_vision_capability_from_request(user_id, model_id, vision_enabled_override = None):
-    """
-    Get vision capability, checking user's request override first.
-    Priority: request override > stored override > probed capability
-    """
-    if vision_enabled_override is not None:
-        return vision_enabled_override
-    return get_vision_capability(user_id, model_id)
+def _perform_web_search(query, max_results=5):
+    """Wrapper to call search utility with proper context."""
+    return perform_web_search(tavily_client, query, max_results)
 
 
-def get_max_history_turns_for_model(model_id, user_id = "", vision_enabled_override = None):
-    vision_capable = get_vision_capability_from_request(user_id, model_id, vision_enabled_override)
-    return MAX_HISTORY_TURNS_VISION if vision_capable else MAX_HISTORY_TURNS_TEXT
+def _build_messages(user_id, user_message, attachments=None, model_id=DEFAULT_MODEL, 
+                   vision_enabled_override=None, web_search=False, rag_enabled=False):
+    """Wrapper to call message utility with proper context."""
+    return build_messages(
+        user_id, user_message, SYSTEM_PROMPT, user_histories, attachments, model_id,
+        UPLOAD_DIR, INLINE_LOCAL_UPLOADS, _get_max_history_turns_for_model,
+        _get_vision_capability_from_request, _perform_web_search, _perform_rag_search,
+        vision_enabled_override, web_search, rag_enabled
+    )
 
 
-def validate_attachments_for_model(model_id, attachments, user_id = "", vision_enabled_override = None):
-    if not attachments:
-        return
-    vision_capable = get_vision_capability_from_request(user_id, model_id, vision_enabled_override)
-    if vision_capable:
-        return
-    for att in attachments:
-        mt = (att.mime_type or "").lower()
-        # Only allow text/* for text-only models
-        if not mt.startswith("text/"):
-            raise HTTPException(status_code=400, detail="Selected model is text-only; remove non-text attachments (images/PDFs).")
-
-
-
-def _inject_attachments_into_message(base_text, attachments):
-    if not attachments:
-        return base_text
-    lines: List[str] = []
-    for att in attachments:
-        header = f"[Attachment] {att.filename} ({att.mime_type}) URL: {att.url}"
-        if att.text:
-            # Limit attachment text to avoid huge prompts
-            preview = att.text[:5000]
-            header += f"\nContent preview:\n{preview}"
-        lines.append(header)
-    return base_text + "\n\n" + "\n\n".join(lines)
-
-
-def _build_user_content(user_message,
-                        attachments,
-                        model_id,
-                        user_id = "",
-                        vision_enabled_override = None):
-    vision_capable = get_vision_capability_from_request(user_id, model_id, vision_enabled_override)
-    if vision_capable:
-        parts: List[Dict[str, Any]] = [{"type": "text", "text": user_message}]
-        for att in attachments or []:
-            mt = (att.mime_type or "").lower()
-            if mt.startswith("image/"):
-                # Ensure absolute URL; client attempts this already, but be tolerant
-                url = str(att.url)
-                try:
-                    # If it's relative, make it absolute to our origin
-                    if not (url.startswith("http://") or url.startswith("https://") or url.startswith("data:")):
-                        url = url if url.startswith("/") else "/" + url
-                        # We cannot know host here reliably; keep as-is and rely on client normalization
-                except Exception:
-                    pass
-                # Optionally inline local uploads as data URLs so the model server
-                # doesn't need to fetch from our FastAPI host.
-                if INLINE_LOCAL_UPLOADS:
-                    try:
-                        from urllib.parse import urlparse
-                        import base64
-                        parsed = urlparse(url)
-                        path = parsed.path or ""
-                        if path.startswith("/uploads/"):
-                            fname = os.path.basename(path)
-                            fpath = UPLOAD_DIR / fname
-                            if fpath.exists() and fpath.is_file():
-                                raw = fpath.read_bytes()
-                                b64 = base64.b64encode(raw).decode("ascii")
-                                url = f"data:{mt};base64,{b64}"
-                    except Exception:
-                        # Fall back to original URL if any error occurs
-                        pass
-                parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": url}
-                })
-            elif mt.startswith("text/") and att.text:
-                parts.append({"type": "text", "text": f"[Attachment {att.filename}]\n{att.text[:5000]}"})
-            # PDFs are kept as reference only (no OCR here)
-        return parts
-    # text-only fallback: merge into a single string (with lightweight attachment previews)
-    if not attachments:
-        return user_message
-    lines = [user_message]
-    for att in attachments:
-        mt = (att.mime_type or "").lower()
-        if mt.startswith("text/") and att.text:
-            lines.append(f"[Attachment {att.filename}]\n{att.text[:1000]}")
-        elif mt.startswith("image/"):
-            lines.append(f"[Image reference] {att.url}")
-    return "\n\n".join(lines)
-
-
-def normalize_messages_for_vllm(
-    messages,
-    model_id,
-    user_id = "",
-    vision_enabled_override = None
-):
-    # If the target model is vision-capable, keep structured parts intact
-    vision_capable = get_vision_capability_from_request(user_id, model_id, vision_enabled_override)
-    if vision_capable:
-        return messages
-    normalized = []
-
-    for m in messages:
-        content = m.get("content")
-
-        if isinstance(content, str):
-            normalized.append(m)
-            continue
-
-        if isinstance(content, list):
-            parts = []
-            for p in content:
-                if isinstance(p, dict):
-                    if p.get("type") == "text":
-                        parts.append(p.get("text", ""))
-                    elif p.get("type") == "image_url":
-                        url = p.get("image_url", {}).get("url", "")
-                        if url:
-                            parts.append(f"[Image] {url}")
-
-            normalized.append(
-                {
-                    "role": m.get("role", "user"),
-                    "content": "\n".join(parts),
-                }
-            )
-            continue
-
-        normalized.append(
-            {
-                "role": m.get("role", "user"),
-                "content": str(content),
-            }
-        )
-
-    return normalized
-
-
-def perform_web_search(query, max_results = 5):
-    """
-    Perform web search using Tavily and return formatted results.
-    Returns empty string if search fails or is not configured.
-    """
-    if not tavily_client:
-        return ""
-    
-    try:
-        response = tavily_client.search(
-            query=query,
-            search_depth="basic",  # "basic" for faster, "advanced" for more thorough
-            max_results=max_results,
-            include_answer=True,  # Get a direct answer if available
-        )
-        
-        # Format results for LLM context
-        parts = []
-        
-        # Include direct answer if available
-        if response.get("answer"):
-            parts.append(f"**Direct Answer:** {response['answer']}")
-        
-        # Include search results
-        results = response.get("results", [])
-        if results:
-            parts.append("\n**Web Search Results:**")
-            for i, r in enumerate(results, 1):
-                title = r.get("title", "")
-                url = r.get("url", "")
-                content = r.get("content", "")[:500]  # Limit content length
-                parts.append(f"\n{i}. **{title}**\n   URL: {url}\n   {content}")
-        
-        return "\n".join(parts) if parts else ""
-    
-    except Exception as e:
-        print(f"Web search failed: {e}")
-        return ""
-
-
-def build_messages(user_id, user_message, attachments = None, model_id = DEFAULT_MODEL, vision_enabled_override = None, web_search = False, rag_enabled = False):
-    history = user_histories.get(user_id)
-    if history is None:
-        history = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    # Keep system message (first) and only last N turns to reduce context growth
-    system_msg = []
-    tail = []
-    if history and isinstance(history[0], dict) and history[0].get("role") == "system":
-        system_msg = [history[0]]  # type: ignore[index]
-        tail = history[1:]
-    else:
-        tail = history
-
-    # Each turn is two messages (user+assistant); keep last N turns per model type
-    max_tail_msgs = get_max_history_turns_for_model(model_id) * 2
-    trimmed_tail = tail[-max_tail_msgs:]
-
-    messages = [*system_msg, *trimmed_tail]
-    
-    # Augment user message with context from various sources
-    augmented_message = user_message
-    context_parts = []
-    
-    # Add RAG context if enabled
-    if rag_enabled:
-        rag_context = perform_rag_search(user_id, user_message)
-        if rag_context:
-            context_parts.append(rag_context)
-    
-    # Add web search results if enabled
-    if web_search:
-        search_results = perform_web_search(user_message)
-        if search_results:
-            context_parts.append(f"**[Web Search Context]**\n{search_results}")
-    
-    # Combine contexts
-    if context_parts:
-        combined_context = "\n\n---\n".join(context_parts)
-        augmented_message = f"{user_message}\n\n---\n{combined_context}\n---\n\nPlease use the above context to help answer my question. Cite sources when relevant."
-    
-    user_content = _build_user_content(augmented_message, attachments, model_id, user_id, vision_enabled_override)
-    messages.append({"role": "user", "content": user_content})
-    return messages
-
-
-def _parse_allowed_tokens_from_error(msg):
-    # Typical format:
-    # "This model's maximum context length is 1024 tokens and your request has 899 input tokens (256 > 1024 - 899)."
-    try:
-        max_ctx_match = re.search(r"maximum context length is (\d+) tokens", msg)
-        input_match = re.search(r"your request has (\d+) input tokens", msg)
-        if not max_ctx_match or not input_match:
-            return None
-        max_ctx = int(max_ctx_match.group(1))
-        input_tokens = int(input_match.group(1))
-        allowed = max_ctx - input_tokens - CONTEXT_MARGIN
-        return allowed if allowed > 0 else 0
-    except Exception:
-        return None
+def _normalize_messages_for_vllm(messages, model_id, user_id="", vision_enabled_override=None):
+    """Wrapper to call message utility with proper context."""
+    return normalize_messages_for_vllm(
+        messages, model_id, _get_vision_capability_from_request, user_id, vision_enabled_override
+    )
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -658,9 +217,16 @@ async def chat(req: ChatRequest):
     model_name = (req.model or DEFAULT_MODEL).strip()
     if not model_name:
         raise HTTPException(status_code=400, detail="No model selected. Please pick a model from the dropdown.")
-    validate_attachments_for_model(model_name, req.attachments, req.user_id, req.vision_enabled)
-    messages = build_messages(req.user_id, req.message, req.attachments, model_name, req.vision_enabled, req.web_search or False, req.rag_enabled or False)
-    messages = normalize_messages_for_vllm(messages, model_name, req.user_id, req.vision_enabled)
+    _validate_attachments_for_model(model_name, req.attachments, req.user_id, req.vision_enabled)
+    messages = _build_messages(
+        req.user_id, 
+        req.message, 
+        req.attachments, 
+        model_name, 
+        req.vision_enabled, 
+        req.web_search or False, 
+        req.rag_enabled or False)
+    messages = _normalize_messages_for_vllm(messages, model_name, req.user_id, req.vision_enabled)
     max_tokens = DEFAULT_MAX_TOKENS
     # Reserve some tokens for suffix if we hit the length limit
     effective_max_tokens = max(16, max_tokens - SUFFIX_MARGIN_TOKENS)
@@ -674,7 +240,7 @@ async def chat(req: ChatRequest):
             top_p=0.95,
         )
     except BadRequestError as e:
-        allowed = _parse_allowed_tokens_from_error(str(e))
+        allowed = parse_allowed_tokens_from_error(str(e))
         if allowed is None:
             # Fallback: halve and retry once
             effective_max_tokens = max(16, effective_max_tokens // 2)
@@ -691,7 +257,7 @@ async def chat(req: ChatRequest):
     except (NotFoundError, Exception) as e:
         # Fallback to web search when model is unavailable
         if tavily_client:
-            search_results = perform_web_search(req.message)
+            search_results = _perform_web_search(req.message)
             if search_results:
                 fallback_answer = f"**Model is not available, results are from web:**\n\n{search_results}"
                 return ChatResponse(
@@ -732,15 +298,15 @@ async def chat(req: ChatRequest):
 
     # Prune stored history to respect max turns per selected model
     hist = user_histories.get(req.user_id)
-        if hist:
-            system_msg = []
-            tail = []
+    if hist:
+        system_msg = []
+        tail = []
         if isinstance(hist[0], dict) and hist[0].get("role") == "system":
-            system_msg = [hist[0]]  # type: ignore[index]
+            system_msg = [hist[0]]
             tail = hist[1:]
         else:
             tail = hist
-        max_tail_msgs = get_max_history_turns_for_model(model_name, req.user_id, req.vision_enabled) * 2
+        max_tail_msgs = _get_max_history_turns_for_model(model_name, req.user_id, req.vision_enabled) * 2
         trimmed_tail = tail[-max_tail_msgs:]
         user_histories[req.user_id] = [*system_msg, *trimmed_tail]
 
@@ -761,9 +327,16 @@ def chat_stream(req: ChatRequest):
         def gen_err():
             yield "No model selected. Please pick a model from the dropdown."
         return StreamingResponse(gen_err(), media_type="text/plain")
-    validate_attachments_for_model(model_name, req.attachments, req.user_id, req.vision_enabled)
-    messages = build_messages(req.user_id, req.message, req.attachments, model_name, req.vision_enabled, req.web_search or False, req.rag_enabled or False)
-    messages = normalize_messages_for_vllm(messages, model_name, req.user_id, req.vision_enabled)
+    _validate_attachments_for_model(model_name, req.attachments, req.user_id, req.vision_enabled)
+    messages = _build_messages(
+        req.user_id, 
+        req.message, 
+        req.attachments, 
+        model_name, 
+        req.vision_enabled, 
+        req.web_search or False, 
+        req.rag_enabled or False)
+    messages = _normalize_messages_for_vllm(messages, model_name, req.user_id, req.vision_enabled)
 
     def token_generator():
         buffer = []
@@ -786,7 +359,7 @@ def chat_stream(req: ChatRequest):
         try:
             stream = do_stream(effective_max_tokens)
         except BadRequestError as e:
-            allowed = _parse_allowed_tokens_from_error(str(e))
+            allowed = parse_allowed_tokens_from_error(str(e))
             if allowed is None:
                 effective_max_tokens = max(16, effective_max_tokens // 2)
             else:
@@ -799,7 +372,7 @@ def chat_stream(req: ChatRequest):
         except NotFoundError:
             # Fallback to web search when model is unavailable
             if tavily_client:
-                search_results = perform_web_search(req.message)
+                search_results = _perform_web_search(req.message)
                 if search_results:
                     yield f"**Model is not available, results are from web:**\n\n{search_results}"
                     return
@@ -808,7 +381,7 @@ def chat_stream(req: ChatRequest):
         except Exception as e:
             # Fallback to web search for any other model errors
             if tavily_client:
-                search_results = perform_web_search(req.message)
+                search_results = _perform_web_search(req.message)
                 if search_results:
                     yield f"**Model is not available, results are from web:**\n\n{search_results}"
                     return
@@ -853,11 +426,11 @@ def chat_stream(req: ChatRequest):
             system_msg = []
             tail = []
             if isinstance(hist[0], dict) and hist[0].get("role") == "system":
-                system_msg = [hist[0]]  # type: ignore[index]
+                system_msg = [hist[0]]
                 tail = hist[1:]
             else:
                 tail = hist
-            max_tail_msgs = get_max_history_turns_for_model(model_name, req.user_id, req.vision_enabled) * 2
+            max_tail_msgs = _get_max_history_turns_for_model(model_name, req.user_id, req.vision_enabled) * 2
             trimmed_tail = tail[-max_tail_msgs:]
             user_histories[req.user_id] = [*system_msg, *trimmed_tail]
 
@@ -918,6 +491,7 @@ async def rag_upload(user_id: str, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Only PDF files are supported for RAG")
     
     # Save file temporarily
+    import uuid
     doc_id = str(uuid.uuid4())
     unique_name = f"{doc_id}{ext}"
     dest = UPLOAD_DIR / unique_name
@@ -933,7 +507,10 @@ async def rag_upload(user_id: str, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Could not extract text from PDF")
     
     # Index the document
-    chunk_count = index_document(user_id, doc_id, file.filename, text)
+    chunk_count = index_document(
+        qdrant_client, RAG_COLLECTION_NAME, RAG_EMBEDDING_MODEL,
+        user_id, doc_id, file.filename, text, RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP
+    )
     
     return {
         "status": "ok",
@@ -954,7 +531,7 @@ def rag_list_documents(user_id: str):
 @app.delete("/rag/documents/{doc_id}")
 def rag_delete_document(doc_id: str, user_id: str):
     """Delete a document from the RAG index."""
-    success = delete_document(user_id, doc_id)
+    success = delete_document(qdrant_client, RAG_COLLECTION_NAME, user_id, doc_id)
     if not success:
         raise HTTPException(status_code=404, detail="Document not found or access denied")
     return {"status": "ok", "doc_id": doc_id}
@@ -969,7 +546,10 @@ class RAGSearchRequest(BaseModel):
 @app.post("/rag/search")
 def rag_search(req: RAGSearchRequest):
     """Search indexed documents (for testing)."""
-    results = search_documents(req.user_id, req.query, req.top_k or RAG_TOP_K)
+    results = search_documents(
+        qdrant_client, RAG_COLLECTION_NAME, RAG_EMBEDDING_MODEL,
+        req.user_id, req.query, req.top_k or RAG_TOP_K
+    )
     return {"query": req.query, "results": results}
 
 
@@ -1063,60 +643,6 @@ ALLOWED_EXTENSIONS = {
 }
 
 
-def compress_image(file_path, mime_type):
-    """
-    Compress image in-place if it exceeds size threshold.
-    Resizes large images and re-encodes with quality tuning.
-    Thresholds: 500 KB soft limit, 1 MB aggressive limit.
-    """
-    try:
-        file_size = file_path.stat().st_size
-        if file_size < IMAGE_SIZE_THRESHOLD:
-            return  # No compression needed
-        
-        img = Image.open(file_path)
-        original_mode = img.mode
-        
-        # Convert RGBA/LA/P to RGB if saving as JPEG (JPEG doesn't support transparency)
-        if img.mode in ("RGBA", "LA", "P"):
-            if mime_type in ("image/jpeg", "application/octet-stream"):
-                rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-                if img.mode == "RGBA":
-                    rgb_img.paste(img, mask=img.split()[-1])
-                else:
-                    rgb_img.paste(img)
-                img = rgb_img
-        
-        # Resize if dimensions are too large
-        if img.width > IMAGE_MAX_DIMENSION or img.height > IMAGE_MAX_DIMENSION:
-            img.thumbnail((IMAGE_MAX_DIMENSION, IMAGE_MAX_DIMENSION), Image.Resampling.LANCZOS)
-        
-        # Determine output format and quality
-        if mime_type == "image/png":
-            output_format = "PNG"
-            save_kwargs = {"optimize": True}
-        elif mime_type == "image/webp":
-            output_format = "WEBP"
-            save_kwargs = {"quality": IMAGE_QUALITY}
-        else:  # Default to JPEG for unknown/JPEG types
-            output_format = "JPEG"
-            save_kwargs = {"quality": IMAGE_QUALITY, "optimize": True}
-        
-        # Save to in-memory buffer first to check size
-        buffer = io.BytesIO()
-        img.save(buffer, format=output_format, **save_kwargs)
-        compressed_size = buffer.tell()
-        
-        # Only write back if compressed size is smaller
-        if compressed_size < file_size:
-            buffer.seek(0)
-            file_path.write_bytes(buffer.getvalue())
-    
-    except Exception as e:
-        # Log error but don't fail upload if compression fails
-        print(f"Warning: Image compression failed for {file_path.name}: {e}")
-
-
 @app.post("/upload")
 async def upload(files: List[UploadFile] = File(...)):
     if not files:
@@ -1142,7 +668,10 @@ async def upload(files: List[UploadFile] = File(...)):
 
         # Compress image if it exceeds size threshold
         if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
-            compress_image(dest, uf.content_type or "application/octet-stream")
+            compress_image(
+                dest, uf.content_type or "application/octet-stream",
+                IMAGE_SIZE_THRESHOLD, IMAGE_MAX_DIMENSION, IMAGE_QUALITY
+            )
 
         item = {
             "filename": name,
