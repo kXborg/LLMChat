@@ -1,10 +1,10 @@
 // Rendering utilities: bubbles, markdown, code copy buttons, stats
-(function(){
+(function () {
   let autoScroll = true;
   function isAtBottom(el, threshold = 4) {
     try { return (el.scrollTop + el.clientHeight) >= (el.scrollHeight - threshold); } catch { return true; }
   }
-  (function initScrollTracking(){
+  (function initScrollTracking() {
     const el = document.getElementById("messages");
     if (!el) return;
     autoScroll = isAtBottom(el);
@@ -59,7 +59,7 @@
             markCopied();
             return;
           }
-        } catch (_) {}
+        } catch (_) { }
         try {
           const ta = document.createElement('textarea');
           ta.value = text;
@@ -79,10 +79,63 @@
     });
   }
 
+  /**
+   * Extract thinking content from <think>...</think> blocks
+   * Handles both raw tags and HTML-escaped variants
+   * Returns { thinking: string, content: string }
+   */
+  function extractThinking(rawText) {
+    if (!rawText) return { thinking: '', content: '' };
+
+    let thinking = '';
+    let content = rawText;
+
+    // Pattern 1: Raw <think>...</think> tags
+    const rawThinkRegex = /<think>([\s\S]*?)<\/think>/gi;
+    content = content.replace(rawThinkRegex, (match, p1) => {
+      thinking += (thinking ? '\n\n' : '') + p1.trim();
+      return '';
+    });
+
+    // Pattern 2: HTML-escaped &lt;think&gt;...&lt;/think&gt; tags
+    const escapedThinkRegex = /&lt;think&gt;([\s\S]*?)&lt;\/think&gt;/gi;
+    content = content.replace(escapedThinkRegex, (match, p1) => {
+      thinking += (thinking ? '\n\n' : '') + p1.trim();
+      return '';
+    });
+
+    // Debug: log when thinking content is found
+    if (thinking) {
+      console.log('[Render] Extracted thinking content:', thinking.substring(0, 100) + '...');
+    }
+
+    return { thinking: thinking.trim(), content: content.trim() };
+  }
+
   function renderMarkdownInto(element, rawText) {
     const messagesDiv = document.getElementById("messages");
     const pinned = autoScroll;
-    const html = DOMPurify.sanitize(marked.parse(rawText || ""));
+
+    // DEBUG: Always log to verify this code is loaded
+    console.log('[Render V2] rawText preview:', (rawText || '').substring(0, 200));
+
+    // Extract thinking content
+    const { thinking, content } = extractThinking(rawText);
+
+    let html = '';
+
+    // Add collapsible thinking block if present
+    if (thinking) {
+      const sanitizedThinking = DOMPurify.sanitize(thinking);
+      html += `<details class="thinking-block">
+        <summary>💭 Model's Reasoning</summary>
+        <div class="thinking-content">${sanitizedThinking}</div>
+      </details>`;
+    }
+
+    // Add main content
+    html += DOMPurify.sanitize(marked.parse(content || ""));
+
     element.innerHTML = html;
     attachCodeCopyButtons(element);
     if (pinned) messagesDiv.scrollTop = messagesDiv.scrollHeight;

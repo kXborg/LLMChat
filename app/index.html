@@ -478,6 +478,55 @@
                 transform: rotate(360deg);
             }
         }
+
+        /* Thinking block - collapsible reasoning section */
+        .thinking-block {
+            background: linear-gradient(135deg, #f8f9fb 0%, #f0f2f5 100%);
+            border-left: 3px solid #6c757d;
+            padding: 10px 14px;
+            margin-bottom: 10px;
+            font-size: 0.88em;
+            color: #555;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .thinking-block summary {
+            cursor: pointer;
+            font-weight: 500;
+            color: #495057;
+            user-select: none;
+            list-style: none;
+        }
+
+        .thinking-block summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .thinking-block summary::before {
+            content: '▶ ';
+            font-size: 0.75em;
+            margin-right: 4px;
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+
+        .thinking-block[open] summary::before {
+            transform: rotate(90deg);
+        }
+
+        .thinking-block[open] summary {
+            margin-bottom: 8px;
+            border-bottom: 1px solid #e0e0e0;
+            padding-bottom: 6px;
+        }
+
+        .thinking-content {
+            white-space: pre-wrap;
+            font-style: italic;
+            line-height: 1.5;
+            color: #666;
+        }
     </style>
 </head>
 
@@ -486,11 +535,6 @@
         <div class="container">
             <div class="header-row">
                 <h2>Chat with Your Model</h2>
-                <a href="https://opencv.org/university/courses/?utm_source=opcv&utm_medium=menu" target="_blank"
-                    rel="noopener noreferrer" title="OpenCV University Courses">
-                    <img src="/static/opencv-logo-no-text-1.svg" alt="OpenCV" width="48" height="48"
-                        style="display:block;" />
-                </a>
             </div>
             <div class="controls-row">
                 <!-- Left: model selector -->
@@ -566,7 +610,7 @@
                 <li><strong>3.</strong> ✅RAG enabled for large Document Processing</li>
                 <li><strong>4.</strong> ✅Vector DB Added</li>
                 <li><strong>5.</strong> ✅On-device ML support (local inference)</li>
-                <li><strong>6.</strong> Show currently running device (GPU/CPU/Edge)</li>
+                <li><strong>6.</strong> ✅Thinking tokens separated from response</li>
                 <li><strong>7.</strong> Export chat (JSON / text / PDF)</li>
                 <li><strong>8.</strong> User management - login + history backed by a database</li>
                 <li><strong>9.</strong> Dynamic error handling for models that does not support system prompt</li>
