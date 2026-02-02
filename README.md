@@ -21,6 +21,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 3000
 
 
 ## Tested Models on vLLM Server (RTX 3080 Ti, 12 GB)
+Confused with hosting LLMs locally or from remote instance? Checkout this article on [Self hosting LLMs using Various Serving Engines](https://www.orbital.net.in/blog/self-hosting-llms-vllm-sglang-llamacpp).
+
 The following are the list of models we have successfully tried so far on `vllm==0.12.x` versions. The errors we faced and fixes are also logged within.
 
 | Model Name | Command | Remarks |
